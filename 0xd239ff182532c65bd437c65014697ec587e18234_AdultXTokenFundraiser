@@ -301,7 +301,7 @@ contract MintableToken is StandardToken {
     * @param _to The address which will receive the freshly minted tokens.
     * @param _value The number of tokens that will be created.
     */
-    function mint(address _to, uint256 _value) onlyMinter canMint public {
+    function mint(address _to, uint256 _value) public onlyMinter canMint {
         totalSupply = totalSupply.plus(_value);
         balances[_to] = balances[_to].plus(_value);
 
@@ -313,7 +313,7 @@ contract MintableToken is StandardToken {
     *
     * @return Whether or not the process was successful.
     */
-    function disableMinting() onlyMinter canMint public {
+    function disableMinting() public onlyMinter canMint {
         mintingDisabled = true;
        
         emit MintingDisabled();
@@ -419,6 +419,69 @@ contract HasOwner {
     }
 }
 
+// File: contracts/token/PausableToken.sol
+
+/**
+ * @title Pausable Token
+ *
+ * @dev Allows you to pause/unpause transfers of your token.
+ **/
+contract PausableToken is StandardToken, HasOwner {
+
+    /// Indicates whether the token contract is paused or not.
+    bool public paused = false;
+
+    /**
+     * @dev Event fired when the token contracts gets paused.
+     */
+    event Pause();
+
+    /**
+     * @dev Event fired when the token contracts gets unpaused.
+     */
+    event Unpause();
+
+    /**
+     * @dev Allows a function to be called only when the token contract is not paused.
+     */
+    modifier whenNotPaused() {
+        require(!paused);
+        _;
+    }
+
+    /**
+     * @dev Pauses the token contract.
+     */
+    function pause() public onlyOwner whenNotPaused {
+        paused = true;
+        emit Pause();
+    }
+
+    /**
+     * @dev Unpauses the token contract.
+     */
+    function unpause() public onlyOwner {
+        require(paused);
+
+        paused = false;
+        emit Unpause();
+    }
+
+    /// Overrides of the standard token's functions to add the paused/unpaused functionality.
+
+    function transfer(address _to, uint256 _value) public whenNotPaused returns (bool) {
+        return super.transfer(_to, _value);
+    }
+
+    function approve(address _spender, uint256 _value) public whenNotPaused returns (bool) {
+        return super.approve(_spender, _value);
+    }
+
+    function transferFrom(address _from, address _to, uint256 _value) public whenNotPaused returns (bool) {
+        return super.transferFrom(_from, _to, _value);
+    }
+}
+
 // File: contracts/fundraiser/AbstractFundraiser.sol
 
 contract AbstractFundraiser {
@@ -511,20 +574,20 @@ contract BasicFundraiser is HasOwner, AbstractFundraiser {
     // Decimal factor for multiplication purposes.
     uint256 constant DECIMALS_FACTOR = 10 ** uint256(DECIMALS);
 
-    /// The start time of the fundraiser - Unix timestamp.
+    // The start time of the fundraiser - Unix timestamp.
     uint256 public startTime;
 
-    /// The end time of the fundraiser - Unix timestamp.
+    // The end time of the fundraiser - Unix timestamp.
     uint256 public endTime;
 
-    /// The address where funds collected will be sent.
+    // The address where funds collected will be sent.
     address public beneficiary;
 
-    /// The conversion rate with decimals difference adjustment,
-    /// When converion rate is lower than 1 (inversed), the function calculateTokens() should use division
+    // The conversion rate with decimals difference adjustment,
+    // When converion rate is lower than 1 (inversed), the function calculateTokens() should use division
     uint256 public conversionRate;
 
-    /// The total amount of ether raised.
+    // The total amount of ether raised.
     uint256 public totalRaised;
 
     /**
@@ -604,7 +667,7 @@ contract BasicFundraiser is HasOwner, AbstractFundraiser {
     }
 
     /**
-     * @dev this overridable function returns the current conversion rate for the fundraiser
+     * @dev this overridable function returns the current conversion rate multiplied by the conversion rate factor
      */
     function getConversionRate() public view returns (uint256) {
         return conversionRate;
@@ -785,384 +848,55 @@ contract GasPriceLimitFundraiser is HasOwner, BasicFundraiser {
     }
 }
 
-// File: contracts/fundraiser/CappedFundraiser.sol
+// File: contracts/fundraiser/ForwardFundsFundraiser.sol
 
 /**
- * @title Capped Fundraiser
+ * @title Forward Funds to Beneficiary Fundraiser
  *
- * @dev Allows you to set a hard cap on your fundraiser.
+ * @dev This contract forwards the funds received to the beneficiary.
  */
-contract CappedFundraiser is BasicFundraiser {
-    /// The maximum amount of ether allowed for the fundraiser.
-    uint256 public hardCap;
-
+contract ForwardFundsFundraiser is BasicFundraiser {
     /**
-     * @dev The initialization method.
-     *
-     * @param _hardCap The maximum amount of ether allowed to be raised.
+     * @dev Forward funds directly to beneficiary
      */
-    function initializeCappedFundraiser(uint256 _hardCap) internal {
-        require(_hardCap > 0);
-
-        hardCap = _hardCap;
-    }
-
-    /**
-     * @dev Adds additional check if the hard cap has been reached.
-     *
-     * @return Whether the token purchase will be allowed.
-     */
-    function validateTransaction() internal view {
-        super.validateTransaction();
-        require(totalRaised < hardCap);
-    }
-
-    /**
-     * @dev Overrides the method from the default `Fundraiser` contract
-     * to additionally check if the `hardCap` is reached.
-     *
-     * @return Whether or not the fundraiser has ended.
-     */
-    function hasEnded() public view returns (bool) {
-        return (super.hasEnded() || totalRaised >= hardCap);
+    function handleFunds(address, uint256 _ethers) internal {
+        // Forward the funds directly to the beneficiary
+        beneficiary.transfer(_ethers);
     }
 }
 
-// File: contracts/fundraiser/FinalizableFundraiser.sol
+// File: contracts/fundraiser/TieredFundraiser.sol
 
 /**
- * @title Finalizable Fundraiser
+ * @title TieredFundraiser
  *
- * @dev Allows the owner of this contract to finalize the fundraiser at any given time
- * after certain conditions are met, such as hard cap reached,
- * and also do extra work when finalized.
+ * @dev A fundraiser that improves the base conversion precision to allow percent bonuses
  */
-contract FinalizableFundraiser is BasicFundraiser {
-    /// Flag indicating whether or not the fundraiser is finalized.
-    bool public isFinalized = false;
+
+contract TieredFundraiser is BasicFundraiser {
+    // Conversion rate factor for better precision.
+    uint256 constant CONVERSION_RATE_FACTOR = 100;
 
     /**
-     * @dev Event fires if the finalization of the fundraiser is successful.
-     */
-    event Finalized();
-
-    /**
-     * @dev Finalizes the fundraiser. Cannot be reversed.
-     */
-    function finalize() onlyOwner public {
-        require(!isFinalized);
-        require(hasEnded());
-
-        finalization();
-        emit Finalized();
-
-        isFinalized = true;
-    }
-
-    /**
-     * @dev Override this function to add extra work when a fundraiser is finalized.
-     * Don't forget to add super.finalization() to execute this part.
-     */
-    function finalization() internal {
-        beneficiary.transfer(address(this).balance);
-    }
-
-
-    /**
-     * @dev Do nothing, wait for finalization
-     */
-    function handleFunds(address, uint256) internal {
-    }
-    
-}
-
-// File: contracts/component/RefundSafe.sol
-
-/**
- * @title Refund Safe
- *
- * @dev Allows your fundraiser to offer refunds if soft cap is not reached 
- * while the fundraiser is active.
- */
-contract RefundSafe is HasOwner {
-    using SafeMath for uint256;
-
-    /// The state of the refund safe.
-    /// ACTIVE    - the default state while the fundraiser is active.
-    /// REFUNDING - the refund safe allows participants in the fundraiser to get refunds.
-    /// CLOSED    - the refund safe is closed for business.
-    enum State {ACTIVE, REFUNDING, CLOSED}
-
-    /// Holds all ETH deposits of participants in the fundraiser.
-    mapping(address => uint256) public deposits;
-
-    /// The address which will receive the funds if the fundraiser is successful.
-    address public beneficiary;
-
-    /// The state variable which will control the lifecycle of the refund safe.
-    State public state;
-
-    /**
-     * @dev Event fired when the refund safe is closed.
-     */
-    event RefundsClosed();
-
-    /**
-     * @dev Event fired when refunds are allowed.
-     */
-    event RefundsAllowed();
-
-    /**
-     * @dev Event fired when a participant in the fundraiser is successfully refunded.
-     *
-     * @param _address The address of the participant.
-     * @param _value The number of ETH which were refunded.
-     */
-    event RefundSuccessful(address indexed _address, uint256 _value);
-
-    /**
-     * @dev Constructor.
-     *
-     * @param _beneficiary The address which will receive the funds if the fundraiser is a success.
-     */
-    constructor(address _owner, address _beneficiary)
-        HasOwner(_owner)
-        public
-    {
-        require(_beneficiary != 0x0);
-
-        beneficiary = _beneficiary;
-        state = State.ACTIVE;
-    }
-
-    /**
-     * @dev Sets The beneficiary address.
-     *
-     * @param _beneficiary The address of the beneficiary.
-     */
-    function setBeneficiary(address _beneficiary) public onlyOwner {
-        require(_beneficiary != address(0));
-
-        beneficiary = _beneficiary;
-    }
-
-    /**
-     * @dev Deposits ETH into the refund safe.
-     *
-     * @param _address The address of the participant in the fundraiser.
-     */
-    function deposit(address _address) onlyOwner public payable {
-        require(state == State.ACTIVE);
-
-        deposits[_address] = deposits[_address].plus(msg.value);
-    }
-
-    /**
-     * @dev Closes the refund safe.
-     */
-    function close() onlyOwner public {
-        require(state == State.ACTIVE);
-
-        state = State.CLOSED;
-
-        emit RefundsClosed();
-
-        beneficiary.transfer(address(this).balance);
-    }
-
-    /**
-     * @dev Moves the refund safe into a state of refund.
-     */
-    function allowRefunds() onlyOwner public {
-        require(state == State.ACTIVE);
-
-        state = State.REFUNDING;
-
-        emit RefundsAllowed();
-    }
-
-    /**
-     * @dev Refunds a participant in the fundraiser.
-     *
-     * @param _address The address of the participant.
-     */
-    function refund(address _address) public {
-        require(state == State.REFUNDING);
-
-        uint256 amount = deposits[_address];
-        // We do not want to emit RefundSuccessful events for empty accounts with zero ether
-        require(amount != 0);
-        // Zeroing the deposit early prevents reentrancy issues
-        deposits[_address] = 0;
-        _address.transfer(amount);
-
-        emit RefundSuccessful(_address, amount);
-    }
-}
-
-// File: contracts/fundraiser/RefundableFundraiser.sol
-
-/**
- * @title Refundable fundraiser
- *
- * @dev Allows your fundraiser to offer refunds to token buyers if it failed to reach the `softCap` in its duration.
- */
-contract RefundableFundraiser is FinalizableFundraiser {
-    /// The minimum amount of funds (in ETH) to be gathered in order for the 
-    /// fundraiser to be considered successful.
-    uint256 public softCap;
-
-    /// The instance of the refund safe which holds all ETH funds until the fundraiser
-    /// is finalized.
-    RefundSafe public refundSafe;
-
-    /**
-     * @dev The constructor.
-     *
-     * @param _softCap The minimum amount of funds (in ETH) that need to be reached.
-     */
-    function initializeRefundableFundraiser(uint256 _softCap) internal {
-        require(_softCap > 0);
-
-        refundSafe = new RefundSafe(address(this), beneficiary);
-        softCap = _softCap;
-    }
-
-    /**
-     * @dev Defines the abstract function from `BaseFundraiser` to add the funds to the `refundSafe`
-     */
-    function handleFunds(address _address, uint256 _ethers) internal {
-        refundSafe.deposit.value(_ethers)(_address);
-    }
-
-    /**
-     * @dev Checks if the soft cap was reached by the fundraiser.
-     *
-     * @return Whether `softCap` is reached or not.
-     */
-    function softCapReached() public view returns (bool) {
-        return totalRaised >= softCap;
-    }
-
-    /**
-     * @dev If the fundraiser failed to reach the soft cap,
-     * participants can use this method to get their ether back.
-     */
-    function getRefund() public {
-        require(isFinalized);
-        require(!softCapReached());
-
-        refundSafe.refund(msg.sender);
-    }
-
-    /**
-     * @dev Overrides the setBeneficiation fucntion to set the beneficiary of the refund safe
-     *
-     * @param _beneficiary The address of the beneficiary.
-     */
-    function setBeneficiary(address _beneficiary) public onlyOwner {
-        super.setBeneficiary(_beneficiary);
-        refundSafe.setBeneficiary(_beneficiary);
-    }
-
-    /**
-     * @dev Overrides the default function from `FinalizableFundraiser`
-     * to check if soft cap was reached and appropriatelly allow refunds
-     * or simply close the refund safe.
-     */
-    function finalization() internal {
-        super.finalization();
-
-        if (softCapReached()) {
-            refundSafe.close();
-        } else {
-            refundSafe.allowRefunds();
-        }
-    }
-}
-
-// File: contracts/fundraiser/PresaleFundraiser.sol
-
-/**
- * @title PresaleFundraiser
- *
- * @dev This is the standard fundraiser contract which allows
- * you to raise ETH in exchange for your tokens.
- */
-contract PresaleFundraiser is MintableTokenFundraiser {
-    /// @dev The token hard cap for the pre-sale
-    uint256 public presaleSupply;
-
-    /// @dev The token hard cap for the pre-sale
-    uint256 public presaleMaxSupply;
-
-    /// @dev The start time of the pre-sale (Unix timestamp).
-    uint256 public presaleStartTime;
-
-    /// @dev The end time of the pre-sale (Unix timestamp).
-    uint256 public presaleEndTime;
-
-    /// @dev The conversion rate for the pre-sale
-    uint256 public presaleConversionRate;
-
-    /**
-     * @dev The initialization method.
-     *
-     * @param _startTime The timestamp of the moment when the pre-sale starts
-     * @param _endTime The timestamp of the moment when the pre-sale ends
-     * @param _conversionRate The conversion rate during the pre-sale
-     */
-    function initializePresaleFundraiser(
-        uint256 _presaleMaxSupply,
-        uint256 _startTime,
-        uint256 _endTime,
-        uint256 _conversionRate
-    )
-        internal
-    {
-        require(_endTime >= _startTime);
-        require(_conversionRate > 0);
-
-        presaleMaxSupply = _presaleMaxSupply;
-        presaleStartTime = _startTime;
-        presaleEndTime = _endTime;
-        presaleConversionRate = _conversionRate;
-    }
-
-    /**
-     * @dev Internal funciton that helps to check if the pre-sale is active
-     */
-    
-    function isPresaleActive() internal view returns (bool) {
-        return now < presaleEndTime && now >= presaleStartTime;
-    }
-    /**
-     * @dev this function different conversion rate while in presale
-     */
+      * @dev Define conversion rates based on the tier start and end date
+      */
     function getConversionRate() public view returns (uint256) {
-        if (isPresaleActive()) {
-            return presaleConversionRate;
-        }
-        return super.getConversionRate();
+        return super.getConversionRate().mul(CONVERSION_RATE_FACTOR);
     }
 
     /**
-     * @dev It throws an exception if the transaction does not meet the preconditions.
+     * @dev this overridable function that calculates the tokens based on the ether amount
      */
-    function validateTransaction() internal view {
-        require(msg.value != 0);
-        require(now >= startTime && now < endTime || isPresaleActive());
+    function calculateTokens(uint256 _amount) internal view returns(uint256 tokens) {
+        return super.calculateTokens(_amount).div(CONVERSION_RATE_FACTOR);
     }
 
-    function handleTokens(address _address, uint256 _tokens) internal {
-        if (isPresaleActive()) {
-            presaleSupply = presaleSupply.plus(_tokens);
-            require(presaleSupply <= presaleMaxSupply);
-        }
-
-        super.handleTokens(_address, _tokens);
+    /**
+     * @dev this overridable function returns the current conversion rate factor
+     */
+    function getConversionRateFactor() public pure returns (uint256) {
+        return CONVERSION_RATE_FACTOR;
     }
-
 }
 
 // File: contracts/Fundraiser.sol
@@ -1170,124 +904,144 @@ contract PresaleFundraiser is MintableTokenFundraiser {
 /**
  * @title AdultXToken
  */
- 
 
-contract AdultXToken is MintableToken, BurnableToken {
-  constructor(address _minter)
-    StandardToken(
-      "Adult X Token",   // Token name
-      "ADUX", // Token symbol
-      18  // Token decimals
-    )
-    
-    MintableToken(_minter)
-    public
-  {
-  }
+contract AdultXToken is MintableToken, BurnableToken, PausableToken {
+    constructor(address _owner, address _minter)
+        StandardToken(
+            "Adult X Token",   // Token name
+            "ADUX", // Token symbol
+            18  // Token decimals
+        )
+        HasOwner(_owner)
+        MintableToken(_minter)
+        public
+    {
+    }
 }
+
 
 
 /**
  * @title AdultXTokenSafe
  */
- 
+
 contract AdultXTokenSafe is TokenSafe {
-  constructor(address _token) 
+  constructor(address _token)
     TokenSafe(_token)
     public
   {
-    // Group "Team and Advisors"
-    init(
-      0, // Group Id
-      1535716800 // Release date = 31 Aug 2018 12:00 UTC
-    );
-    add(
-      0, // Group Id
-      0x10A7201e2B59b4e37Ae34588Ed16fe2BB2013765, // Token Safe Entry Address
-      50000000000000000000000000  // Allocated tokens
-    );
-    // Group "Marketing"
-    init(
-      1, // Group Id
-      1535716800 // Release date = 31 Aug 2018 12:00 UTC
-    );
-    add(
-      1, // Group Id
-      0x7be89481CDd9Cd407D5A6e2c73d9c6B9B6DdfDBb, // Token Safe Entry Address
-      100000000000000000000000000  // Allocated tokens
-    );
+    
     // Group "Airdrop"
     init(
+      1, // Group Id
+      1543881540 // Release date = 2018-12-03 23:59 UTC
+    );
+    add(
+      1, // Group Id
+      0x1f98908f6857de3227fb735fACa75CCD5b9403c5,  // Token Safe Entry Address
+      50000000000000000000000000  // Allocated tokens
+    );
+    
+    // Group "Marketing"
+    init(
       2, // Group Id
-      1543665600 // Release date = 01 Dec 2018 12:00 UTC
+      1543881540 // Release date = 2018-12-03 23:59 UTC
     );
     add(
       2, // Group Id
-      0xAc2582953a509804D303ad47b5E12D1bE5f3E044, // Token Safe Entry Address
+      0x1f98908f6857de3227fb735fACa75CCD5b9403c5,  // Token Safe Entry Address
+      100000000000000000000000000  // Allocated tokens
+    );
+    
+    // Group "Team and Partners"
+    init(
+      3, // Group Id
+      1543881540 // Release date = 2018-12-03 23:59 UTC
+    );
+    add(
+      3, // Group Id
+      0x1f98908f6857de3227fb735fACa75CCD5b9403c5,  // Token Safe Entry Address
       50000000000000000000000000  // Allocated tokens
     );
   }
 }
+
 
 
 /**
  * @title AdultXTokenFundraiser
  */
 
-contract AdultXTokenFundraiser is MintableTokenFundraiser, PresaleFundraiser, IndividualCapsFundraiser, CappedFundraiser, RefundableFundraiser, GasPriceLimitFundraiser {
-  AdultXTokenSafe public tokenSafe;
+contract AdultXTokenFundraiser is MintableTokenFundraiser, IndividualCapsFundraiser, ForwardFundsFundraiser, TieredFundraiser, GasPriceLimitFundraiser {
+    AdultXTokenSafe public tokenSafe;
 
-  constructor()
-    HasOwner(msg.sender)
-    public
-  {
-    token = new AdultXToken(
-      
-      address(this)  // The fundraiser is the minter
-    );
+    constructor()
+        HasOwner(msg.sender)
+        public
+    {
+        token = new AdultXToken(
+        msg.sender,  // Owner
+        address(this)  // The fundraiser is the minter
+        );
 
-    tokenSafe = new AdultXTokenSafe(token);
-    MintableToken(token).mint(address(tokenSafe), 200000000000000000000000000);
+        tokenSafe = new AdultXTokenSafe(token);
+        MintableToken(token).mint(address(tokenSafe), 200000000000000000000000000);
 
-    initializeBasicFundraiser(
-      1540987200, // Start date = 31 Oct 2018 12:00 UTC
-      1543579200,  // End date = 30 Nov 2018 12:00 UTC
-      10000, // Conversion rate = 10000 ADUX per 1 ether
-      0x1f98908f6857de3227fb735fACa75CCD5b9403c5     // Beneficiary
-    );
+        initializeBasicFundraiser(
+            1543795140, // Start date = 2018-12-02 23:59 UTC
+            1609459140,  // End date = 2020-12-31 23:59 UTC
+            6000, // Conversion rate = 6000 ADUX per 1 ether
+            0x1f98908f6857de3227fb735fACa75CCD5b9403c5     // Beneficiary
+        );
 
-    initializeIndividualCapsFundraiser(
-      (0.2 ether), // Minimum contribution
-      (0 ether)  // Maximum individual cap
-    );
+        initializeIndividualCapsFundraiser(
+            (0.1 ether), // Minimum contribution
+            (0 ether)  // Maximum individual cap
+        );
 
-    initializeGasPriceLimitFundraiser(
-        0 // Gas price limit in wei
-    );
+        initializeGasPriceLimitFundraiser(
+            0 // Gas price limit in wei
+        );
 
-    initializePresaleFundraiser(
-        50000000000000000000000000,
-        1535716800, // Start =  
-        1540987200,   // End = 
-        14000
-    );
+        
 
-    initializeCappedFundraiser(
-      (35000 ether) // Hard cap
-    );
+        
 
-    initializeRefundableFundraiser(
-      (3500 ether)  // Soft cap
-    );
+        
+
+        
+    }
     
+    /**
+      * @dev Define conversion rates based on the tier start and end date
+      */
+    function getConversionRate() public view returns (uint256) {
+        uint256 rate = super.getConversionRate();
+        if (now >= 1543795140 && now < 1544918340)
+            return rate.mul(125).div(100);
+        
+        if (now >= 1544918340 && now < 1546300740)
+            return rate.mul(120).div(100);
+        
+        if (now >= 1546300740 && now < 1547855940)
+            return rate.mul(110).div(100);
+        
+
+        return rate;
+    }
+
+    /**
+      * @dev Fundraiser with mintable token allows the owner to mint through the Fundraiser contract
+      */
+    function mint(address _to, uint256 _value) public onlyOwner {
+        MintableToken(token).mint(_to, _value);
+    }
+
+    /**
+      * @dev Irreversibly disable minting
+      */
+    function disableMinting() public onlyOwner {
+        MintableToken(token).disableMinting();
+    }
     
-  }
-  
-  /**
-    * @dev Disable minting upon finalization
-    */
-  function finalization() internal {
-      super.finalization();
-      MintableToken(token).disableMinting();
-  }
 }
